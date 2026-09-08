@@ -59,33 +59,36 @@ pub fn upload_item_content(
     // Re-add validation for the preview image size and description/patch note limits.
     // Steam rejects an update that exceeds these, so catching them here fails fast
     // with a clear message instead of a silent no-op upload.
-    const MAX_PREVIEW_BYTES: u64 = 1_000_000;  // Steam Workshop preview is limited to ~1 MB
-    const MAX_DESCRIPTION_BYTES: usize = 8000; // Steam counts bytes (UTF-8), not characters
-    const MAX_TITLE_BYTES: usize = 128;        // Steam Workshop title limit (bytes)
-    const MAX_PATCHNOTE_BYTES: usize = 8000;   // patch notes share the description byte limit
+    // Use Steamworks SDK constants so these limits stay in sync with the SDK.
+    // k_cchPublishedDocumentTitleMax includes the null terminator, so subtract 1.
+    // No SDK constant exists for preview file size; 1 MB is Steam's documented workshop limit.
+    const MAX_PREVIEW_BYTES: u64 = 1_000_000;
+    let max_title_bytes = (steamworks::sys::k_cchPublishedDocumentTitleMax - 1) as usize;
+    let max_desc_bytes  = steamworks::sys::k_cchPublishedDocumentDescriptionMax as usize;
+    let max_note_bytes  = steamworks::sys::k_cchPublishedDocumentChangeDescriptionMax as usize;
 
-    if title.len() > MAX_TITLE_BYTES {
+    if title.len() > max_title_bytes {
         colors::error(&format!(
             "Title is {} bytes (max {}). Please shorten the manifest title.",
-            title.len(), MAX_TITLE_BYTES
+            title.len(), max_title_bytes
         ));
         return;
     }
 
-    if description.len() > MAX_DESCRIPTION_BYTES {
+    if description.len() > max_desc_bytes {
         colors::error(&format!(
             "Description is {} bytes (max {}). The upload would be silently rejected by Steam. \
              Note: non-ASCII characters (em-dashes, arrows, etc.) count as 2-3 bytes each.",
-            description.len(), MAX_DESCRIPTION_BYTES
+            description.len(), max_desc_bytes
         ));
         return;
     }
 
     if let Some(note) = patchnote {
-        if note.len() > MAX_PATCHNOTE_BYTES {
+        if note.len() > max_note_bytes {
             colors::error(&format!(
                 "Patch note is {} bytes (max {}).",
-                note.len(), MAX_PATCHNOTE_BYTES
+                note.len(), max_note_bytes
             ));
             return;
         }

@@ -1,4 +1,10 @@
 use std;
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use std::time::Instant;
+use std::thread;
 
 use crate::colors;
 
@@ -17,7 +23,7 @@ fn visibility2enum(visibility: u32) -> Result<steamworks::PublishedFileVisibilit
 
 /// Uploads a workshop item with the given parameters
 pub fn upload_item_content(
-    ugc: &steamworks::UGC, appid: u32,
+    client: &steamworks::Client, ugc: &steamworks::UGC, appid: u32,
     published_id: steamworks::PublishedFileId,
     content: &str, preview: &str,
     title: &str, description: &str,
@@ -50,6 +56,51 @@ pub fn upload_item_content(
         return;
     }
 
+    // Re-add validation for the preview image size and description/patch note limits.
+    // Steam rejects an update that exceeds these, so catching them here fails fast
+    // with a clear message instead of a silent no-op upload.
+    const MAX_PREVIEW_BYTES: u64 = 1_000_000;  // Steam Workshop preview is limited to ~1 MB
+    const MAX_DESCRIPTION_BYTES: usize = 8000; // Steam counts bytes (UTF-8), not characters
+    const MAX_TITLE_BYTES: usize = 128;        // Steam Workshop title limit (bytes)
+    const MAX_PATCHNOTE_BYTES: usize = 8000;   // patch notes share the description byte limit
+
+    if title.len() > MAX_TITLE_BYTES {
+        colors::error(&format!(
+            "Title is {} bytes (max {}). Please shorten the manifest title.",
+            title.len(), MAX_TITLE_BYTES
+        ));
+        return;
+    }
+
+    if description.len() > MAX_DESCRIPTION_BYTES {
+        colors::error(&format!(
+            "Description is {} bytes (max {}). The upload would be silently rejected by Steam. \
+             Note: non-ASCII characters (em-dashes, arrows, etc.) count as 2-3 bytes each.",
+            description.len(), MAX_DESCRIPTION_BYTES
+        ));
+        return;
+    }
+
+    if let Some(note) = patchnote {
+        if note.len() > MAX_PATCHNOTE_BYTES {
+            colors::error(&format!(
+                "Patch note is {} bytes (max {}).",
+                note.len(), MAX_PATCHNOTE_BYTES
+            ));
+            return;
+        }
+    }
+
+    if let Ok(meta) = std::fs::metadata(preview) {
+        if meta.is_file() && meta.len() > MAX_PREVIEW_BYTES {
+            colors::error(&format!(
+                "Preview image is {} bytes (max {}). Please reduce it before uploading.",
+                meta.len(), MAX_PREVIEW_BYTES
+            ));
+            return;
+        }
+    }
+
     // uploading the content of the workshop item
     // this process uses a builder pattern to set properties of the item
     // mandatory properties are:
@@ -61,12 +112,19 @@ pub fn upload_item_content(
     // after setting the properties, call .submit() to start uploading the item
     // this function is unique in that it returns a handle to the upload, which can be used to
     // monitor the progress of the upload and needs a closure to be called when the upload is done
-    // in this example, the watch handle is ignored for simplicity
     //
     // notes:
     // - once an upload is started, it cannot be cancelled!
     // - content_path is the path to a folder which houses the content you wish to upload
-    let _upload_handle = ugc
+    //
+    // IMPORTANT: submit() returns an UpdateWatchHandle that must be kept alive and we must
+    // pump client.run_callbacks() until the closure fires, otherwise the process exits before
+    // Steam finishes the upload and the change is silently dropped (exit code 0, nothing uploaded).
+    let (tx, rx) = mpsc::channel::<Result<(steamworks::PublishedFileId, bool), String>>();
+    let finished = Arc::new(AtomicBool::new(false));
+    let finished_clone = finished.clone();
+
+    let upload_handle = ugc
         .start_item_update(steamworks::AppId(appid), published_id)
         .content_path(std::path::Path::new(content))
         .preview_path(std::path::Path::new(preview))
@@ -74,28 +132,50 @@ pub fn upload_item_content(
         .description(description)
         .tags(tags, false)
         .visibility(visibility_enum)
-        .submit(patchnote, |upload_result| {
-            // handle the result
-            match upload_result {
+        .submit(patchnote, move |upload_result| {
+            // push the real result into the channel so the caller can decide success/failure
+            let res = match upload_result {
                 Ok((published_id, needs_to_agree_to_terms)) => {
                     if needs_to_agree_to_terms {
-                        // as stated in the create_item function, if the user needs to agree to the terms of use,
-                        // the upload did NOT succeed, despite the result being Ok
-                        colors::error(
-                            "You need to agree to the terms of use before you can upload any files"
-                        );
+                        // despite being Ok, the upload did NOT succeed in this case
+                        Err("You need to agree to the terms of use before you can upload any files".to_string())
                     } else {
-                        // this is the definite indicator that an item was uploaded successfully
-                        // the watch handle is NOT an accurate indicator whether the upload is done
-                        // the progress on the other hand IS accurate and can simply be used to monitor the upload
-                        colors::success(&format!("Uploaded item with id {:?}", published_id));
+                        Ok((published_id, needs_to_agree_to_terms))
                     }
                 }
-                Err(e) => {
-                    // the upload failed
-                    // the exact reason can be found in the error type
-                    colors::error(&format!("Error uploading item: {:?}", e));
-                }
-            }
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = tx.send(res);
+            finished_clone.store(true, Ordering::SeqCst);
         });
+
+    // keep the handle alive and pump callbacks until Steam reports the outcome
+    let deadline = Instant::now() + Duration::from_secs(30 * 60); // generous cap for big content packs
+    loop {
+        if finished.load(Ordering::SeqCst) {
+            break;
+        }
+        client.run_callbacks();
+        let (status, processed, total) = upload_handle.progress();
+        // report progress so the user sees the upload moving (and when it gets stuck)
+        colors::info(&format!("  upload progress: {:?} {}/{}", status, processed, total));
+        thread::sleep(Duration::from_millis(500));
+
+        if Instant::now() > deadline {
+            colors::error("Upload timed out waiting for Steam to confirm completion.");
+            return;
+        }
+    }
+
+    match rx.try_recv() {
+        Ok(Ok((published_id, _))) => {
+            colors::success(&format!("Uploaded item with id {:?}", published_id));
+        }
+        Ok(Err(e)) => {
+            colors::error(&format!("Error uploading item: {}", e));
+        }
+        Err(_) => {
+            colors::error("Upload finished but the result channel was empty.");
+        }
+    }
 }

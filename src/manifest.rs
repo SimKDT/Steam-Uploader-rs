@@ -35,7 +35,7 @@ impl Manifest {
     /// And save it
     pub fn init(extension: &str) -> Self {
         let manifest = Self {
-            schema: Some("https://raw.githubusercontent.com/SirDoggyJvla/SteamUploader-rs/refs/heads/main/manifest_schema/mod-manifest-schema.json".to_string()),
+            schema: Some("https://raw.githubusercontent.com/SimKDT/Steam-Uploader-rs/refs/heads/main/manifest_schema/mod-manifest-schema.json".to_string()),
             appid: 0,
             workshopid: None,
             content: "./Contents".to_string(),

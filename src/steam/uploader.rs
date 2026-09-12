@@ -62,7 +62,7 @@ pub fn upload_item_content(
     // Use Steamworks SDK constants so these limits stay in sync with the SDK.
     // k_cchPublishedDocumentTitleMax includes the null terminator, so subtract 1.
     // No SDK constant exists for preview file size; 1 MB is Steam's documented workshop limit.
-    const MAX_PREVIEW_BYTES: u64 = 1_000_000;
+    const MAX_PREVIEW_BYTES: u64 = 1_048_576;
     let max_title_bytes = (steamworks::sys::k_cchPublishedDocumentTitleMax - 1) as usize;
     let max_desc_bytes  = steamworks::sys::k_cchPublishedDocumentDescriptionMax as usize;
     let max_note_bytes  = steamworks::sys::k_cchPublishedDocumentChangeDescriptionMax as usize;

@@ -21,7 +21,7 @@ clap = { version = "4", features = ["derive"] }
 inquire = "0.7"
 
 # Steamworks SDK bindings
-steamworks = "0.13.0"
+steamworks = { version = "0.13.0", features = ["raw-bindings"] }
 
 # for manifest parsing and handling
 serde = { version = "1.0", features = ["derive"] }

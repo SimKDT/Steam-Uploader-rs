@@ -134,6 +134,7 @@ fn execute_command(command: Commands) {
                     // upload the content
                     colors::info("Uploading content to Steam Workshop...");
                     steam::uploader::upload_item_content(
+                        &client,
                         &ugc,
                         manifest.appid,
                         published_id,

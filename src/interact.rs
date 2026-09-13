@@ -187,9 +187,9 @@ pub fn display_manifests_menu() -> Commands {
                 return Commands::RemoveManifest { name };
             }
 
-            // manifests_options::BACK => {
-            //     return Ok(());
-            // }
+            manifests_options::BACK => {
+                return display_main_menu();
+            }
 
             _ => {
                 // Find which manifest was selected
